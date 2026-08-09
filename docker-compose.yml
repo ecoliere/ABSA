@@ -1,0 +1,102 @@
+services:
+  # === PostgreSQL + pgvector ===
+  analyzer-db:
+    image: pgvector/pgvector:pg16
+    container_name: analyzer-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: analyzer
+      POSTGRES_DB: analyzer
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - diploma-net
+    healthcheck:
+      test: >
+        bash -c "
+          pg_isready -U postgres -d analyzer &&
+          psql -U postgres -d analyzer -c 'CREATE EXTENSION IF NOT EXISTS vector;' 2>/dev/null &&
+          psql -U postgres -d analyzer -c \"SELECT 1 FROM pg_extension WHERE extname = 'vector'\" | grep -q 1
+        "
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # === Redis ===
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: redis-server --requirepass dG9wdG9wMTIzIT8qJm5ld1Bhc3N3b3Jk
+    volumes:
+      - redisdata:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - diploma-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "dG9wdG9wMTIzIT8qJm5ld1Bhc3N3b3Jk", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # === Backend ===
+  backend:
+    build:
+      context: ./vkr-aspect-analysis
+      dockerfile: Dockerfile
+    container_name: diploma-backend
+    restart: unless-stopped
+    environment:
+      DB_HOST: analyzer-db
+      DB_PORT: 5432
+      DB_NAME: analyzer
+      DB_USER: postgres
+      DB_PASSWORD: analyzer
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      REDIS_PASSWORD: dG9wdG9wMTIzIT8qJm5ld1Bhc3N3b3Jk
+      ENV: dev
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production}
+      GIGACHAT_AUTH_KEY: ${GIGACHAT_AUTH_KEY}
+      GIGACHAT_RQUID: ${GIGACHAT_RQUID}
+      ALLOWED_ORIGINS: http://localhost:5173,http://192.168.1.4:5173,http://127.0.0.1:5173
+    ports:
+      - "8081:8081"
+    networks:
+      - diploma-net
+    volumes:
+      - model_cache:/root/.cache/torch
+    depends_on:
+      analyzer-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # === Frontend ===
+  frontend:
+    build:
+      context: ./front
+      dockerfile: Dockerfile
+    container_name: diploma-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    networks:
+      - diploma-net
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  redisdata:
+  model_cache:
+
+networks:
+  diploma-net:
+    driver: bridge
